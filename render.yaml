@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: vulscan
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
