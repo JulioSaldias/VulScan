@@ -55,7 +55,7 @@ export function createApp({scanner=scan,gate=new RateGate()}={}) {
       }finally{clearTimeout(deadline);gate.release();res.off('close',disconnected);}
       return;
     }
-    const assets={'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/style.css':['style.css','text/css']};
+    const assets={'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/style.css':['style.css','text/css'],'/favicon.svg':['favicon.svg','image/svg+xml']};
     if(req.method==='GET'&&Object.hasOwn(assets,req.url)){
       const [name,type]=assets[req.url];
       try{const content=await readFile(new URL(`./public/${name}`,import.meta.url));res.writeHead(200,{'Content-Type':`${type}; charset=utf-8`});res.end(content);}catch{json(500,{error:'Archivo no disponible.'});}
