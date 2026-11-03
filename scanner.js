@@ -1,4 +1,6 @@
 import {parseTarget,requestTarget} from './network.js';
+import {resolveTxt,resolveCaa} from 'node:dns/promises';
+import {isIP} from 'node:net';
 export const weights = {'Crítica':35,'Alta':20,'Media':8,'Baja':3,'Informativa':0};
 export function inspectHeaders(headers, secure) {
   const f=[];
@@ -39,6 +41,30 @@ export function technologies(html, headers) {
   }
   return {packages:list,banners:[headers.server,headers['x-powered-by']].filter(Boolean).map(s=>s.slice(0,120))};
 }
+export async function inspectDns(host, add, checks, warnings) {
+  if(isIP(host)){checks.push({name:'DNS de correo y CAA',status:'No aplica a una IP literal'});return;}
+  const query=async(name,type,fn)=>{
+    try{return await Promise.race([fn(name),new Promise((_,reject)=>setTimeout(()=>reject(new Error('DNS timeout')),2500))]);}
+    catch(error){if(error.code==='ENODATA'||error.code==='ENOTFOUND')return [];throw error;}
+  };
+  try{
+    const records=await query(host,'TXT',resolveTxt);
+    const all=records.map(parts=>parts.join(''));
+    const spf=all.filter(x=>/^v=spf1(?:\s|$)/i.test(x));
+    if(!spf.length)add('Media','Registro SPF ausente',`No se encontró SPF publicado para ${host}.`,'Publica un único registro SPF que incluya los emisores autorizados; evita crear uno sin revisar tu correo saliente.');
+    else if(spf.length>1)add('Alta','Hay varios registros SPF',`Se detectaron ${spf.length} registros SPF; receptores pueden tratar la política como inválida.`,'Combina los emisores en un único registro SPF.');
+    else if(/\+all(?:\s|$)/i.test(spf[0]))add('Alta','SPF permite cualquier emisor','El mecanismo +all acepta remitentes no autorizados.','Cambia +all por -all o ~all cuando hayas validado todos los emisores legítimos.');
+    else checks.push({name:'SPF',status:'Registro encontrado'});
+    const dmarc=await query(`_dmarc.${host}`,'TXT',resolveTxt);
+    const policies=dmarc.map(parts=>parts.join('')).filter(x=>/^v=DMARC1(?:;|\s|$)/i.test(x));
+    if(!policies.length)add('Media','Registro DMARC ausente',`No se encontró DMARC en _dmarc.${host}.`,'Publica DMARC con p=none para observar informes y planifica una política de aplicación.');
+    else if(policies.some(x=>/\bp=none\b/i.test(x)))add('Baja','DMARC está solo en monitoreo','La política p=none recopila señales, pero no solicita cuarentena ni rechazo.','Revisa los informes agregados y considera endurecer la política gradualmente.');
+    else checks.push({name:'DMARC',status:'Política aplicada'});
+    const caa=await query(host,'CAA',resolveCaa);
+    if(!caa.length)add('Informativa','Registro CAA no observado','No se encontraron restricciones CAA para autoridades certificadoras.','Considera publicar CAA para restringir qué autoridades pueden emitir certificados.');
+    else checks.push({name:'CAA',status:`${caa.length} registro(s) encontrados`});
+  }catch{warnings.push('No se pudieron completar una o más consultas DNS; se informan como no verificadas.');checks.push({name:'DNS SPF / DMARC / CAA',status:'No verificado'});}
+}
 export async function scan(input, {exposure=false, signal, request=requestTarget, osvFetch=fetch}={}) {
   const u=parseTarget(input), findings=[], checks=[], warnings=[];
   const add=(severity,title,description,recommendation)=>findings.push({severity,title,description,recommendation});
@@ -52,6 +78,7 @@ export async function scan(input, {exposure=false, signal, request=requestTarget
     return {url:u.origin,score:null,findings,checks:[{name:'TLS',status:'Falló la validación'}],warnings:['Informe incompleto: no se leyó el sitio.'],technologies:[],at:new Date().toISOString()};
   }
   const final=new URL(response.url);
+  await inspectDns(final.hostname,add,checks,warnings);
   if(response.status<200 || response.status>=300) warnings.push(`HTTP ${response.status}: se analiza una respuesta de error o acceso restringido, no necesariamente la aplicación.`);
   if(response.truncated)warnings.push('HTML limitado a 256 KiB; detección de tecnologías parcial.');
   findings.push(...inspectHeaders(response.headers,final.protocol==='https:'));
